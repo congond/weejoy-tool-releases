@@ -4,9 +4,8 @@
 # Start it (after pushing tag vX.Y.Z to the source repo):
 #   gh workflow run release.yml -R congond/weejoy-tool-releases -f tag=vX.Y.Z
 #
-# Needs secret SOURCE_SSH_KEY: the private half of a read-only deploy key of
-# Solar-VibeCoding/we-joy_aso_tool (reads that one repo only). Publishing uses this repo's own
-# GITHUB_TOKEN.
+# Needs secret SOURCE_TOKEN: a token that can read Solar-VibeCoding/we-joy_aso_tool (the org
+# has deploy keys turned off). Publishing uses this repo's own GITHUB_TOKEN.
 name: release
 
 on:
@@ -52,8 +51,8 @@ jobs:
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ inputs.tag }}
-          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
-          # Do not leave the key in the checkout's git config.
+          token: ${{ secrets.SOURCE_TOKEN }}
+          # Do not leave the token in the checkout's git config.
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -105,7 +104,7 @@ jobs:
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ inputs.tag }}
-          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          token: ${{ secrets.SOURCE_TOKEN }}
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/download-artifact@v4
