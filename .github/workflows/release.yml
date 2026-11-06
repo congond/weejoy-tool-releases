@@ -1,0 +1,131 @@
+# Builds Weejoy Tool from the private source repo and publishes the release here.
+# Runs in this public repo so GitHub Actions minutes are free; the source stays private.
+#
+# Start it (after pushing tag vX.Y.Z to the source repo):
+#   gh workflow run release.yml -R congond/weejoy-tool-releases -f tag=vX.Y.Z
+#
+# Needs secret SOURCE_TOKEN: a token that can READ Solar-VibeCoding/we-joy_aso_tool
+# (fine-grained: Contents read-only on that repo, or classic with `repo` scope).
+# Publishing uses this repo's own GITHUB_TOKEN.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag in the source repo, e.g. v0.1.6"
+        required: true
+      publish:
+        description: "Publish the release (off: only build, to test the pipeline)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_REPO: Solar-VibeCoding/we-joy_aso_tool
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-aarch64
+            bin: weejoy-tool
+          - os: macos-15
+            platform: macos-x86_64
+            target: x86_64-apple-darwin
+            bin: weejoy-tool
+          - os: windows-latest
+            platform: windows-x86_64
+            bin: weejoy-tool.exe
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            bin: weejoy-tool
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          # Do not leave the token in the checkout's git config.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libgtk-3-dev
+      - name: Tag matches Cargo.toml version
+        shell: bash
+        run: |
+          ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "${TAG#v}" != "$ver" ]; then
+            echo "Tag $TAG does not match Cargo.toml version $ver"; exit 1
+          fi
+      - name: Build
+        env:
+          WEEJOY_UPDATE_URL: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+        shell: bash
+        run: cargo build --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          dir="target/${{ matrix.target }}/release"; [ -z "${{ matrix.target }}" ] && dir="target/release"
+          # Raw binary: what the in-app updater downloads (and the Windows/Linux download).
+          cp "$dir/${{ matrix.bin }}" "dist/weejoy-tool-${{ matrix.platform }}$ext"
+          # macOS: "Weejoy Tool.app" in a .dmg for first-time installs.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            bash scripts/macos_app.sh "$dir/${{ matrix.bin }}" "$ver" "dist/WeejoyTool-${{ matrix.platform }}.dmg"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/*
+
+  publish:
+    needs: build
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes and latest.json
+        run: |
+          # Notes: the tag message (or the tagged commit's message), without trailer lines.
+          git tag -l --format='%(contents)' "$TAG" | grep -v '^Co-Authored-By:' > notes.md || true
+          [ -s notes.md ] || echo "Weejoy Tool $TAG" > notes.md
+          python3 scripts/make_manifest.py "$TAG" notes.md dist \
+            "https://github.com/${{ github.repository }}/releases/download/$TAG" > dist/latest.json
+          cat dist/latest.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ github.token }}
+          tag_name: ${{ inputs.tag }}
+          name: Weejoy Tool ${{ inputs.tag }}
+          body_path: notes.md
+          make_latest: true
+          files: dist/*
